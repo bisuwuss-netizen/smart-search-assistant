@@ -150,7 +150,6 @@ if __name__ == "__main__":
     state = {
         "current_query": "什么是 LangGraph？",
         "messages": [],
-        "need_search": False,
         "search_results": "",
         "final_answer": "",
         "current_step": "",

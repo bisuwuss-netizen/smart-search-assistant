@@ -50,8 +50,7 @@ def demo_interrupt():
         state = {
             "current_query": question,
             "messages": [],
-            "need_search": False,
-            "search_results": "",
+                "search_results": "",
             "final_answer": "",
             "current_step": "",
             "search_type": "",

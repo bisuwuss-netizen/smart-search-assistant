@@ -11,9 +11,6 @@ class AgentState(TypedDict):
     # 当前用户问题
     current_query: str
 
-    # 是否需要搜索
-    need_search: bool
-
     # 搜索结果
     search_results: str
 

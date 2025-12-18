@@ -24,29 +24,58 @@ def get_rag_manager():
 
 
 def decide_search(state: AgentState) -> AgentState:
-    """判断搜索类型：local / web / hybrid / none"""
+    """判断搜索类型和复杂度(根据复杂度决定是否开启multi-query)"""
+    state['current_step'] = "🤔 正在判断查询类型..."
     query = state["current_query"]
 
-    prompt = f"""判断以下问题应该使用哪种搜索方式：
+    # 提示词优化：同时判断类型和复杂度
+    prompt = f"""你是一个智能路由专家。请分析以下用户问题，并决定搜索类型和问题复杂度。
 
-问题：{query}
+## 问题
+{query}
 
-选项：
-- LOCAL: 问题涉及已上传的文档/知识库内容
-- WEB: 需要最新信息、新闻、实时数据
-- HYBRID: 需要结合本地知识和网络信息
-- NONE: 常识问题，无需搜索
+## 评估标准
+1. **搜索类型**：
+   - LOCAL: 涉及特定私有知识、上传的文档内容
+   - WEB: 需要互联网上的最新消息、广域知识、事实核查
+   - HYBRID: 既需要本地知识，也需要网络补充信息
+   - NONE: 闲聊、简单常识、可以直接回答无需搜索
 
-只回答 LOCAL / WEB / HYBRID / NONE 之一。"""
+2. **复杂度**：
+   - SIMPLE: 事实性单一问题，意图明确，无歧义（例如：“谁是苹果公司的 CEO？”）
+   - COMPLEX: 涉及对比、分析、多步逻辑、广泛领域或存在潜在歧义的问题（例如：“分析数字经济对中亚国家的影响”）
+
+## 输出格式（严格按此格式，不要有任何多余文字）
+TYPE: [LOCAL/WEB/HYBRID/NONE]
+COMPLEXITY: [SIMPLE/COMPLEX]
+
+分析结论："""
 
     response = llm.invoke([HumanMessage(content=prompt)])
-    search_type = response.content.strip().upper()
+    content = response.content.strip()
 
-    # 验证返回值
+    # 解析结果
+    search_type = "WEB"
+    complexity = "SIMPLE"
+    
+    for line in content.split("\n"):
+        if "TYPE:" in line:
+            search_type = line.split(":", 1)[1].strip().upper()
+        if "COMPLEXITY:" in line:
+            complexity = line.split(":", 1)[1].strip().upper()
+
+    # 验证与容错
     if search_type not in ["LOCAL", "WEB", "HYBRID", "NONE"]:
-        search_type = "WEB"  # 默认网络搜索
-
+        search_type = "WEB"
+    
     state["search_type"] = search_type.lower()
+    
+    # 动态确定是否执行 Multi-Query
+    # 逻辑：只有当复杂度为 COMPLEX 且用户没在入口处显式禁用时，才开启扩展
+    if state.get("use_multi_query", True):
+        state["use_multi_query"] = (complexity == "COMPLEX")
+    
+    print(f"  🎯 意图识别: 类型={search_type} | 复杂度={complexity} | Multi-Query={state['use_multi_query']}")
     return state
 
 
@@ -60,7 +89,7 @@ def expand_query(state: AgentState) -> AgentState:
     2. 覆盖相关的子问题
     3. 使用不同的关键词组合
     """
-    state["current_step"] = "🔄 正在扩展查询..."
+    state["current_step"] = "🔄 正在扩展查询问题..."
 
     # 如果禁用了 Multi-Query，直接返回原查询
     if not state.get("use_multi_query", True):
@@ -186,35 +215,63 @@ def _format_local_contexts(contexts: list) -> str:
 
 
 def hybrid_search(state: AgentState) -> AgentState:
-    """混合搜索：本地 + 网络"""
+    """混合搜索：本地 + 网络 (支持 Multi-Query)"""
     state["current_step"] = "🔄 正在进行混合搜索..."
     
-    # 1. 本地检索
-    local_result = get_rag_manager().query(state["current_query"], top_n=3)
-    state["local_contexts"] = local_result["formatted"]
+    queries = state.get("expanded_queries", [state["current_query"]])
     
-    # 2. 网络搜索
-    search_query = state["current_query"]
-    web_results = search_tool.invoke(search_query)
+    # 1. 本地检索 (取全量 queries)
+    all_local_contexts = []
+    seen_local = set()
+    for q in queries:
+        local_result = get_rag_manager().query(q, top_n=3)
+        for ctx in local_result["contexts"]:
+            content_hash = hash(ctx.get("content", "")[:100])
+            if content_hash not in seen_local:
+                seen_local.add(content_hash)
+                all_local_contexts.append(ctx)
     
-    # 格式化网络结果
-    if isinstance(web_results, list):
-        formatted_web = "\n\n".join([
-            f"[网络{i+1}] 来源: {r.get('url', 'N/A')}\n内容: {r.get('content', '')}"
-            for i, r in enumerate(web_results)
-        ])
-    else:
-        formatted_web = str(web_results)
+    # 2. 网络搜索 (并发执行所有 queries)
+    from concurrent.futures import ThreadPoolExecutor
+    all_web_results = []
+    seen_urls = set()
     
-    state["search_results"] = formatted_web
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        batch_results = list(executor.map(search_tool.invoke, queries))
+        
+    for results in batch_results:
+        # 处理不同格式的返回结果
+        search_hits = []
+        if isinstance(results, list):
+            search_hits = results
+        elif isinstance(results, dict):
+            # Tavily 等可能返回 {"results": [...]} 或 {"answer": ...}
+            search_hits = results.get("results", [])
+            if not search_hits and "answer" in results:
+                search_hits = [{"content": results["answer"], "url": "Tavily Answer"}]
+        elif isinstance(results, str):
+            search_hits = [{"content": results, "url": "N/A"}]
+            
+        for r in search_hits:
+            url = r.get("url", r.get("link", "N/A"))
+            if url not in seen_urls:
+                seen_urls.add(url)
+                all_web_results.append(r)
+
+    # 格式化
+    state["local_contexts"] = _format_local_contexts(all_local_contexts[:5])
+    state["search_results"] = "\n\n".join([
+        f"[网络{i+1}] 来源: {r.get('url', 'N/A')}\n内容: {r.get('content', '')}"
+        for i, r in enumerate(all_web_results[:5])
+    ])
     
-    # 合并来源（将 numpy.float32 转换为 Python float）
+    # 合并来源
     state["sources"] = [
         {"type": "local", "source": ctx.get("metadata", {}).get("source", ""), "score": float(ctx.get("score", 0))}
-        for ctx in local_result["contexts"]
+        for ctx in all_local_contexts[:3]
     ] + [
         {"type": "web", "source": r.get("url", ""), "score": 1.0}
-        for r in (web_results if isinstance(web_results, list) else [])
+        for r in all_web_results[:3]
     ]
     
     return state
@@ -265,43 +322,53 @@ def generate_answer(state: AgentState) -> AgentState:
 
 
 def search_web(state: AgentState) -> AgentState:
-    """网络搜索节点"""
+    """网络搜索节点 (支持 Multi-Query)"""
     state["current_step"] = "🔍 正在搜索网络..."
 
-    query = state["current_query"]
-    # 这里需要重写query，防止后续问到"它"等代词，不知道指代的是什么
-    messages = state["messages"]
-    if messages:  # 有历史对话
-        # 让 LLM 基于历史重写查询
-        rewrite_prompt = f"""基于以下对话历史，将用户的新问题改写为一个独立的、完整的搜索查询。
-        对话历史：
-        {chr(10).join([f"{msg.type}: {msg.content[:100]}" for msg in messages[-4:]])}
-        用户新问题：{query}
-        要求：
-        1. 如果问题包含"它"、"这个"等代词，替换为具体事物
-        2. 如果问题是追问，补充必要的上下文
-        3. 只输出改写后的搜索查询，不要解释
-        改写后的查询："""
+    queries = state.get("expanded_queries") or [state["current_query"]]
+    
+    # 并发搜索
+    from concurrent.futures import ThreadPoolExecutor
+    all_results = []
+    seen_urls = set()
+    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        batch_results = list(executor.map(search_tool.invoke, queries))
+        
+    for results in batch_results:
+        # 处理不同格式的返回结果
+        search_hits = []
+        if isinstance(results, list):
+            search_hits = results
+        elif isinstance(results, dict):
+            # Tavily 等可能返回 {"results": [...]} 或 {"answer": ...}
+            search_hits = results.get("results", [])
+            if not search_hits and "answer" in results:
+                search_hits = [{"content": results["answer"], "url": "Tavily Answer"}]
+        elif isinstance(results, str):
+            search_hits = [{"content": results, "url": "N/A"}]
+            
+        for r in search_hits:
+            url = r.get("url", r.get("link", "N/A"))
+            if url not in seen_urls:
+                seen_urls.add(url)
+                all_results.append(r)
 
-        #调用 llm 重写提示词
-        rewritten = llm.invoke([HumanMessage(content=rewrite_prompt)])
-        search_query = rewritten.content.strip()
-        print(f"  原始查询: {query}")
-        print(f"  改写查询: {search_query}")
-    else:
-        search_query = query
-    results = search_tool.invoke(search_query)
-
-    # 格式化结果
-    if isinstance(results, list):
-        formatted = "\n\n".join([
-            f"来源 {i + 1}: {r.get('url', 'N/A')}\n搜索内容：{r.get('content', '')}"
-            for i, r in enumerate(results)
-        ])
-    else:
-        formatted = str(results)
+    # 格式化结果 (取前 8 条，避免上下文过长)
+    formatted = "\n\n".join([
+        f"来源 {i + 1}: {r.get('url', 'N/A')}\n搜索内容：{r.get('content', r.get('snippet', ''))}"
+        for i, r in enumerate(all_results[:8])
+    ])
 
     state["search_results"] = formatted
+    
+    # 更新 sources
+    state["sources"] = [
+        {"type": "web", "source": r.get("url", "N/A"), "score": 1.0}
+        for r in all_results[:5]
+    ]
+    
+    print(f"  🌐 网络检索完成: 共 {len(queries)} 个查询, 得到 {len(all_results)} 条去重结果")
     return state
 
 

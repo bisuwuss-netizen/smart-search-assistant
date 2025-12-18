@@ -22,16 +22,23 @@
 ```mermaid
 graph TD
     User([用户输入]) --> decide[decide_search]
-    decide --> expand[expand_query]
-    expand --> route_search{路由搜索}
+    decide --> route_decide{搜索路由}
+    
+    route_decide -- none --> skip_search[skip_search]
+    route_decide -- complex --> expand[expand_query]
+    route_decide -- simple --> route_search_direct{直接路由}
+    
+    expand --> route_search{多路搜索}
     
     subgraph "Interrupt (人工审核点)"
     route_search -- local --> local_rag[local_rag_search]
     route_search -- web --> web_search[web_search]
     route_search -- hybrid --> hybrid_search[hybrid_search]
-    end
     
-    route_search -- none --> skip_search[skip_search]
+    route_search_direct -- local --> local_rag
+    route_search_direct -- web --> web_search
+    route_search_direct -- hybrid --> hybrid_search
+    end
     
     local_rag --> reflector[reflect_on_results]
     web_search --> reflector

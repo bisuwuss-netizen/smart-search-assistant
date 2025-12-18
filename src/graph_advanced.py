@@ -31,16 +31,33 @@ from src.nodes import (
 from src.config import Config
 
 
-def route_search(state: AgentState) -> str:
-    """路由到不同的搜索节点"""
+def route_after_decide(state: AgentState) -> str:
+    """决定搜索后的路由：
+    1. 不需要搜索 -> skip_search
+    2. 需要搜索且复杂 -> expand (Multi-Query)
+    3. 需要搜索但简单 -> web/local/hybrid (直接搜索)
+    """
     search_type = state.get("search_type", "none")
+    use_multi_query = state.get("use_multi_query", False)
+
+    if search_type == "none":
+        return "skip_search"
+    
+    if use_multi_query:
+        return "expand"
+    
+    return search_type
+
+
+def route_search(state: AgentState) -> str:
+    """路由到具体的搜索执行节点"""
+    search_type = state.get("search_type", "web")
     routing = {
         "local": "local_rag",
         "web": "web_search",
-        "hybrid": "hybrid_search",
-        "none": "skip_search"
+        "hybrid": "hybrid_search"
     }
-    return routing.get(search_type, "skip_search")
+    return routing.get(search_type, "web_search")
 
 
 def route_after_reflection(state: AgentState) -> str:
@@ -88,18 +105,27 @@ def create_advanced_graph():
     # 设置入口
     workflow.set_entry_point("decide")
 
-    # decide → expand（先扩展查询）
-    workflow.add_edge("decide", "expand")
+    # 添加条件边：从 decide 判断进入哪个分支
+    workflow.add_conditional_edges(
+        "decide",
+        route_after_decide,
+        {
+            "expand": "expand",
+            "skip_search": "skip_search",
+            "web": "web_search",
+            "local": "local_rag",
+            "hybrid": "hybrid_search"
+        }
+    )
 
-    # expand → 根据类型路由到搜索节点
+    # 从 expand 根据类型路由到具体的搜索节点
     workflow.add_conditional_edges(
         "expand",
         route_search,
         {
             "local_rag": "local_rag",
             "web_search": "web_search",
-            "hybrid_search": "hybrid_search",
-            "skip_search": "skip_search"
+            "hybrid_search": "hybrid_search"
         }
     )
 
@@ -152,7 +178,6 @@ def create_initial_state(query: str, use_multi_query: bool = True, max_loops: in
     return {
         "current_query": query,
         "messages": [],
-        "need_search": False,
         "search_results": "",
         "final_answer": "",
         "current_step": "",

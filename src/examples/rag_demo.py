@@ -91,8 +91,7 @@ def test_full_graph():
         state = {
             "current_query": q,
             "messages": [],
-            "need_search": False,
-            "search_results": "",
+                "search_results": "",
             "final_answer": "",
             "current_step": "",
             "search_type": "",
