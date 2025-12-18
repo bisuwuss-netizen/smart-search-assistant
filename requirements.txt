@@ -1,24 +1,25 @@
-attr==0.3.2
-ConfigParser==7.2.0
-cryptography==46.0.3
-docutils==0.22.3
-filelock==3.20.0
-HTMLParser==0.0.2
-ipython==8.12.3
-ipywidgets==8.1.8
-jnius==1.1.0
-keyring==25.7.0
-langchain_community==0.4.1
-langchain_core==1.1.3
-langchain_openai==1.1.2
-langchain_tavily==0.2.13
-langgraph==1.0.4
-protobuf==6.33.2
-pyOpenSSL==25.3.0
-pytest==9.0.2
-python-dotenv==1.2.1
-redis==7.1.0
-Sphinx==9.0.4
-thread==2.0.5
-urllib3_secure_extra==0.1.0
-xmlrpclib==1.0.1
+# LangChain 相关
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-tavily>=0.1.0
+langgraph>=0.2.0
+langgraph-checkpoint>=1.0.0
+langgraph-checkpoint-sqlite>=1.0.0
+# 向量数据库
+chromadb>=0.4.0
+# Web 框架
+fastapi>=0.100.0
+uvicorn>=0.23.0
+streamlit>=1.30.0
+# 数据处理
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+numpy>=1.24.0
+# 中文分词
+jieba>=0.42.0
+# Embedding 和 Rerank 模型
+sentence-transformers>=2.2.0
+# HTTP 客户端
+requests>=2.31.0
+openai>=1.0.0

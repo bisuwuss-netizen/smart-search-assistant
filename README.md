@@ -1,222 +1,313 @@
 # 🔍 Smart Search Assistant
 
-基于 LangGraph 的智能搜索助手，支持多轮对话、自动判断搜索、查询改写、流式输出。
+基于 LangGraph 的 **Agentic RAG** 智能搜索助手，集成多轮对话、本地知识库、网络搜索、反思循环、Multi-Query 扩展等高级功能。
 
 ## ✨ 核心功能
 
-- 🤖 **智能决策**：自动判断问题是否需要网络搜索
-- 🔄 **查询改写**：基于对话历史优化搜索查询
-- 💬 **多轮对话**：支持上下文理解和追问
-- 🔄 **流式输出**：实时显示执行进度
-- 💾 **持久化存储**：自动保存对话历史
-- 🛠️ **可扩展架构**：基于 LangGraph 图结构
+| 功能 | 描述 |
+|------|------|
+| 🤖 **智能路由** | 自动判断搜索类型：本地知识库 / 网络搜索 / 混合搜索 |
+| 📚 **本地 RAG** | 支持 PDF、TXT、Markdown 文档，Hybrid Search + Rerank |
+| 🔄 **反思循环** | Reflector 节点评估检索质量，自动改进查询并重试 |
+| 🔍 **Multi-Query** | 查询扩展，提高检索召回率 |
+| 💬 **多轮对话** | 上下文理解、代词解析、查询改写 |
+| 🌐 **流式输出** | SSE 实时显示执行进度 |
+| 🔌 **RESTful API** | FastAPI 接口，支持 Docker 部署 |
+| 🖥️ **Web UI** | Streamlit 可视化界面 |
 
 ## 🎯 技术亮点
 
-### 1. 查询改写
-当用户使用代词（"它"、"这个"）追问时，系统会基于对话历史重写查询：
-```
-用户：介绍一下 LangGraph
-助手：LangGraph 是...
+### 1. Agentic RAG 核心架构
 
-用户：它的主要优势是什么？
-系统改写：LangGraph 的主要优势是什么？ ✅
+```mermaid
+graph TD
+    User([用户输入]) --> decide[decide_search]
+    decide --> expand[expand_query]
+    expand --> route_search{路由搜索}
+    
+    subgraph "Interrupt (人工审核点)"
+    route_search -- local --> local_rag[local_rag_search]
+    route_search -- web --> web_search[web_search]
+    route_search -- hybrid --> hybrid_search[hybrid_search]
+    end
+    
+    route_search -- none --> skip_search[skip_search]
+    
+    local_rag --> reflector[reflect_on_results]
+    web_search --> reflector
+    hybrid_search --> reflector
+    
+    reflector --> route_reflect{反思路由}
+    route_reflect -- insufficient --> refine[refine_search]
+    refine --> reflector
+    route_reflect -- sufficient --> answer[generate_answer]
+    
+    skip_search --> answer
+    answer --> END([结束])
 ```
 
-### 2. 状态管理
-使用 LangGraph 的 State 机制实现数据共享：
-- 所有节点共享同一个 State
-- 自动持久化到 SQLite
-- 支持多用户隔离
+- **Reflector (反思机制)**: LLM 实时评估检索结果是否足以回答问题，确保输出质量。
+- **Auto-Refinement (自动优化)**: 结果不足时自动生成改进后的 Query 并重新检索（支持多轮循环）。
+- **Multi-Query (查询扩展)**: 自动将复杂问题拆解/扩展为多个相关子查询，极大提升检索召回率。
+- **Human-in-the-Loop (人工干预)**: 在任何实际搜索动作前强制暂停（Interrupt），允许人工预览或干预。
 
-### 3. 流程控制
+### 2. 混合检索 (Hybrid Search)
+
+```python
+# 向量相似度 + BM25 关键词匹配
+final_score = vector_weight * vector_score + (1 - vector_weight) * bm25_score
 ```
-用户输入 
-  ↓
-[判断节点] - 决定是否搜索
-  ↓
-[搜索节点] - 改写查询并搜索（可选）
-  ↓
-[生成节点] - 结合历史和搜索结果生成答案
-  ↓
-返回结果
+
+- 向量检索：捕捉语义相似性
+- BM25：精确匹配关键词
+- Rerank：CrossEncoder 重排序，提高精度
+
+### 3. Human-in-the-Loop
+
+支持在敏感操作前暂停，等待用户确认：
+```python
+# 在搜索节点前设置 interrupt
+workflow.compile(
+    checkpointer=memory,
+    interrupt_before=["local_rag", "web_search", "hybrid_search"]
+)
 ```
 
 ## 🚀 快速开始
 
 ### 1. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. 配置环境变量
+
 ```bash
 cp .env.example .env
-# 编辑 .env 文件，填入你的 API Keys:
+# 编辑 .env 文件:
 # DASHSCOPE_API_KEY=your_key_here
-# TAVILY_API_KEY=your_key_here
+# TAVILY_API_KEY=your_key_here (可选)
 ```
 
-### 3. 运行示例
+### 3. 运行方式
+
+**CLI 模式（推荐入门）:**
 ```bash
-# 流式输出演示
-python examples/streaming_demo.py
-
-# 多轮对话演示
-python examples/basic_usage.py
+python -m src.graph_advanced
 ```
 
-## 📖 使用方法
+**Web UI:**
+```bash
+streamlit run src/ui/streamlit_app.py
+```
+
+**API 服务:**
+```bash
+uvicorn src.api.server:app --reload --port 8000
+```
+
+**Docker 部署:**
+```bash
+docker-compose up -d
+```
+
+## 📖 使用示例
 
 ### 基础用法
+
 ```python
-from src.graph import graph
-from src.state import AgentState
+from src.graph_advanced import ask
 
-# 创建初始状态
-state = AgentState(
-    messages=[],
-    current_query="你的问题",
-    need_search=False,
-    search_results="",
-    final_answer="",
-    current_step=""
-)
-
-# 执行
-config = {"configurable": {"thread_id": "user1"}}
-result = graph.invoke(state, config)
-print(result["final_answer"])
+# 简单问答
+result = ask("什么是 LangGraph？")
+print(result["answer"])
+print(result["sources"])  # 来源追溯
 ```
 
-### 多轮对话
+### 导入文档
+
 ```python
-from examples.basic_usage import ConversationManager
+from src.rag.rag_manager import RAGManager
 
-manager = ConversationManager(thread_id="user123")
+rag = RAGManager.get_instance()
 
-# 第一轮
-answer1 = manager.ask("什么是 Python？")
+# 添加单个文档
+rag.add_document("./data/knowledge/doc.pdf")
 
-# 第二轮（自动加载历史）
-answer2 = manager.ask("它适合初学者吗？")
+# 批量导入目录
+rag.add_documents_from_dir("./data/knowledge/")
+
+# 查看已导入文档
+print(rag.list_documents())
+```
+
+### API 调用
+
+```python
+import requests
+
+# 普通问答
+response = requests.post("http://localhost:8000/ask", json={
+    "query": "什么是 RAG？",
+    "use_multi_query": True,
+    "max_loops": 3
+})
+print(response.json())
+
+# 上传文档
+with open("doc.pdf", "rb") as f:
+    response = requests.post(
+        "http://localhost:8000/documents",
+        files={"file": f}
+    )
 ```
 
 ## 🏗️ 项目结构
+
 ```
 smart-search-assistant/
 ├── src/
-│   ├── config.py          # 配置管理
-│   ├── state.py           # State 定义
-│   ├── tools.py           # 搜索工具
-│   ├── nodes.py           # 节点函数
-│   └── graph.py           # Graph 定义
-├── examples/
-│   ├── streaming_demo.py  # 流式输出示例
-│   └── basic_usage.py     # 多轮对话示例
-├── tests/
-│   ├── test_tools.py      # 工具测试
-│   ├── test_nodes.py      # 节点测试
-│   └── test_graph.py      # 集成测试
-├── checkpoints/           # 持久化存储
-├── README.md
+│   ├── api/                    # FastAPI 服务
+│   │   └── server.py           # RESTful API + SSE
+│   ├── evaluation/             # 评估模块
+│   │   └── rag_evaluator.py    # RAG 质量评估
+│   ├── rag/                    # RAG 核心模块
+│   │   ├── config.py           # RAG 配置
+│   │   ├── document_loader.py  # 文档加载器
+│   │   ├── vector_store.py     # 向量存储 (ChromaDB)
+│   │   ├── retriever.py        # 混合检索器
+│   │   └── rag_manager.py      # RAG 管理器
+│   ├── ui/                     # Web UI
+│   │   └── streamlit_app.py    # Streamlit 界面
+│   ├── utils/                  # 工具模块
+│   │   └── retry.py            # 重试/熔断机制
+│   ├── config.py               # 全局配置
+│   ├── state.py                # State 定义
+│   ├── tools.py                # 搜索工具
+│   ├── nodes.py                # 节点函数
+│   ├── graph.py                # 基础 Graph
+│   ├── graph_with_interrupt.py # Human-in-the-loop Graph
+│   └── graph_advanced.py       # 高级 Graph (推荐入口)
+├── data/
+│   ├── knowledge/              # 知识库文档
+│   └── vector_db/              # 向量数据库 (持久化)
+├── checkpoints/                # 对话状态持久化
+├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
-└── .env.example
+└── README.md
 ```
 
 ## 🔧 配置说明
 
-在 `src/config.py` 中可配置：
-- `MODEL_NAME`: 使用的 LLM 模型
-- `MAX_HISTORY_MESSAGES`: 历史消息保留数量
-- `CHECKPOINT_DIR`: Checkpoint 存储路径
+### 核心配置 (`src/config.py`)
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `MODEL_NAME` | LLM 模型 | `qwen-plus` |
+| `EMBEDDING_MODEL` | 向量嵌入模型 | `shibing624/text2vec-base-chinese` |
+| `RERANK_MODEL` | 重排序模型 | `BAAI/bge-reranker-base` |
+| `CHUNK_SIZE` | 文档切分大小 | `500` |
+| `VECTOR_SEARCH_TOP_K` | 向量检索数量 | `20` |
+| `RERANK_TOP_N` | Rerank 后保留数量 | `5` |
+| `VECTOR_WEIGHT` | 向量权重 | `0.6` |
 
 ## 📊 技术栈
 
-- **LangGraph**: 工作流编排
-- **LangChain**: LLM 集成
-- **DeepSeek**: 大语言模型（通过阿里云百炼）
-- **Tavily**: 网络搜索 API
-- **SQLite**: 持久化存储
+| 类别 | 技术 |
+|------|------|
+| **工作流** | LangGraph |
+| **LLM** | 通义千问 (via 阿里云百炼) |
+| **向量库** | ChromaDB (持久化) |
+| **Embedding** | text2vec-base-chinese |
+| **Rerank** | BGE-Reranker |
+| **搜索** | Tavily API |
+| **API** | FastAPI + SSE |
+| **UI** | Streamlit |
+| **部署** | Docker |
 
 ## 🎓 核心概念
 
-### State（状态）
-所有数据都存储在 State 中，节点之间通过 State 共享数据：
+### State 状态管理
+
 ```python
 class AgentState(TypedDict):
-    messages: List[BaseMessage]  # 对话历史
-    current_query: str            # 当前问题
-    need_search: bool             # 是否需要搜索
-    search_results: str           # 搜索结果
-    final_answer: str             # 最终答案
+    messages: List[BaseMessage]     # 对话历史
+    current_query: str              # 当前问题
+    search_type: str                # 搜索类型: local/web/hybrid/none
+    local_contexts: str             # 本地检索结果
+    search_results: str             # 网络搜索结果
+    sources: List[dict]             # 来源追溯
+    reflection_result: str          # 反思结果
+    loop_count: int                 # 循环次数
+    expanded_queries: List[str]     # 扩展查询
 ```
 
-### 节点（Node）
-每个节点是一个纯函数：接收 State，返回更新后的 State：
-```python
-def decide_search(state: AgentState) -> AgentState:
-    # 读取 state
-    query = state["current_query"]
-    
-    # 执行逻辑
-    need_search = judge_need_search(query)
-    
-    # 更新 state
-    state["need_search"] = need_search
-    return state
+### 节点函数
+
+| 节点 | 功能 |
+|------|------|
+| `decide_search` | 判断搜索类型 |
+| `expand_query` | Multi-Query 扩展 |
+| `local_rag_search` | 本地知识库检索 |
+| `search_web` | 网络搜索 |
+| `hybrid_search` | 混合搜索 |
+| `reflect_on_results` | 反思评估 |
+| `refine_search` | 改进搜索 |
+| `generate_answer` | 生成答案 |
+
+## 📈 RAG 评估
+
+使用 LLM-as-a-Judge 方法评估 RAG 质量：
+
+```bash
+python -m src.evaluation.rag_evaluator
 ```
 
-### 持久化（Checkpointer）
-使用 `thread_id` 区分不同用户，自动保存和恢复对话：
-```python
-config = {"configurable": {"thread_id": "user123"}}
-result = graph.invoke(state, config)  # 自动保存
-```
-
-## 📈 实际运行效果
-```
-Q1: 介绍一下 LangGraph
-  🤔 正在分析问题...
-  🔍 正在搜索网络...
-  ✅ 完成
-A1: LangGraph 是由 LangChain 团队开发的...
-
-Q2: 它的主要优势是什么？
-  🤔 正在分析问题...
-  原始查询: 它的主要优势是什么？
-  改写查询: LangGraph 的主要优势是什么？ ✅
-  🔍 正在搜索网络...
-  ✅ 完成
-A2: LangGraph 的主要优势体现在...
-```
+评估指标：
+- **Faithfulness**: 答案是否忠实于检索内容
+- **Answer Relevancy**: 答案与问题的相关性
+- **Context Precision**: 检索精确度
+- **Context Recall**: 检索召回率
 
 ## 🧪 测试
+
 ```bash
 # 运行所有测试
 pytest tests/ -v
 
-# 测试特定模块
-python tests/test_tools.py
-python tests/test_nodes.py
-python tests/test_graph.py
+# 测试 RAG 功能
+python -m src.examples.rag_demo
+
+# 测试 Interrupt 功能
+python -m src.examples.interrupt_demo
 ```
 
-## 📝 开发计划
+## 📝 功能完成度
 
-### MVP（已完成）✅
+### 已完成 ✅
 - [x] 基础搜索功能
-- [x] 多轮对话
+- [x] 多轮对话 + 查询改写
 - [x] 流式输出
-- [x] 查询改写
-- [x] 持久化
+- [x] SQLite 持久化
+- [x] 本地 RAG (Hybrid Search + Rerank)
+- [x] 向量库持久化
+- [x] 文档去重
+- [x] Human-in-the-loop (Interrupt)
+- [x] Reflector 反思 + 循环
+- [x] Multi-Query 扩展
+- [x] 容错/重试机制
+- [x] FastAPI + SSE
+- [x] RAG 评估脚本
+- [x] Streamlit UI
+- [x] Docker 部署
 
-### 计划中（方案 B）
-- [ ] Interrupt 人工审批
-- [ ] 多源搜索聚合
-- [ ] Web UI（Streamlit）
-- [ ] 引用溯源功能
-- [ ] 子图（Subgraph）集成
+### 扩展方向 📌
+- [ ] 多模态支持 (图片理解)
+- [ ] 更多文档格式 (Word, Excel)
+- [ ] 知识图谱集成
+- [ ] Agent 协作 (Multi-Agent)
 
 ## 🤝 贡献
 
@@ -233,5 +324,6 @@ MIT
 ## 🔗 相关链接
 
 - [LangGraph 文档](https://langchain-ai.github.io/langgraph/)
-- [DeepSeek API](https://platform.deepseek.com/)
-- [Tavily Search](https://tavily.com/)
+- [ChromaDB](https://www.trychroma.com/)
+- [Streamlit](https://streamlit.io/)
+- [FastAPI](https://fastapi.tiangolo.com/)

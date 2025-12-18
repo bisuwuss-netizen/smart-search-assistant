@@ -1,0 +1,50 @@
+# Docker Compose 配置
+# 启动方式: docker-compose up -d
+
+
+services:
+  # FastAPI 后端服务
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smart-search-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./src:/app/src
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Streamlit 前端服务
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smart-search-ui
+    command: streamlit run src/ui/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./src:/app/src
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  data:
+  checkpoints:
